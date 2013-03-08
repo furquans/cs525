@@ -140,6 +140,9 @@ do_tmem_op(
 extern long
 do_xenoprof_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg);
 
+extern long
+do_test_vm(void);
+
 #ifdef CONFIG_COMPAT
 
 extern int

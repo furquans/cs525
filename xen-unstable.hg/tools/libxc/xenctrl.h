@@ -2236,4 +2236,5 @@ int xc_compression_uncompress_page(xc_interface *xch, char *compbuf,
 				   unsigned long compbuf_size,
 				   unsigned long *compbuf_pos, char *dest);
 
+int hypercall_test(xc_interface *handle);
 #endif /* XENCTRL_H */

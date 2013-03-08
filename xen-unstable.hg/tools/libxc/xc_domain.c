@@ -1530,6 +1530,19 @@ int xc_domain_set_virq_handler(xc_interface *xch, uint32_t domid, int virq)
     return do_domctl(xch, &domctl);
 }
 
+int hypercall_test(xc_interface *handle)
+{
+    int rc; 
+/* Hypercall definitions */ 
+
+    DECLARE_HYPERCALL; 
+    hypercall.op = __HYPERVISOR_test_vm; 
+    hypercall.arg[0] = 0; 
+    hypercall.arg[1] = 0; 
+    rc = do_xen_hypercall(handle, &hypercall); 
+    return rc; 
+}
+
 /*
  * Local variables:
  * mode: C
