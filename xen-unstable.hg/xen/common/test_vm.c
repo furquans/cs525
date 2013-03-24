@@ -1,5 +1,8 @@
 #include <xen/lib.h>
 #include <xen/domain_page.h>
+#include <xen/xmalloc.h>
+#include <xen/sched.h>
+
 
 typedef uint32_t md5_uint32;
 typedef uintptr_t md5_uintptr;
@@ -77,11 +80,11 @@ md5_process_block (const void *buffer, size_t len, struct md5_ctx *ctx)
       md5_uint32 D_save = D;
 
       /* First round: using the given function, the context and a constant
-	  the next context is computed.  Because the algorithms processing
-	   unit is a 32-bit word and it is determined to work on words in
-	    little endian byte order we perhaps have to change the byte order
-	     before the computation.  To reduce the work for the next steps
-	     we store the swapped words in the array CORRECT_WORDS.  */
+	   the next context is computed.  Because the algorithms processing
+	      unit is a 32-bit word and it is determined to work on words in
+	          little endian byte order we perhaps have to change the byte order
+		       before the computation.  To reduce the work for the next steps
+		       we store the swapped words in the array CORRECT_WORDS.  */
 
 #define OP(a, b, c, d, s, T)\
       do\
@@ -90,7 +93,7 @@ md5_process_block (const void *buffer, size_t len, struct md5_ctx *ctx)
 	++words;\
 	CYCLIC (a, s);\
 	a += b;\
-	}\
+    }\
       while (0)
 
       /* It is unfortunate that C does not provide an operator for
@@ -98,9 +101,9 @@ md5_process_block (const void *buffer, size_t len, struct md5_ctx *ctx)
 #define CYCLIC(w, s) (w = (w << s) | (w >> (32 - s)))
 
       /* Before we start, one word to the strange constants.
-	  They are defined in RFC 1321 as
+	   They are defined in RFC 1321 as
 
-	   T[i] = (int) (4294967296.0 * fabs (sin (i))), i=1..64
+	      T[i] = (int) (4294967296.0 * fabs (sin (i))), i=1..64
       */
 
       /* Round 1.  */
@@ -122,8 +125,8 @@ md5_process_block (const void *buffer, size_t len, struct md5_ctx *ctx)
       OP (B, C, D, A, 22, (md5_uint32) 0x49b40821);
 
       /* For the second to fourth round we have the possibly swapped words
-	  in CORRECT_WORDS.  Redefine the macro to take an additional first
-	  argument specifying the function to use.  */
+	   in CORRECT_WORDS.  Redefine the macro to take an additional first
+	   argument specifying the function to use.  */
 #undef OP
 #define OP(a, b, c, d, k, s, T)\
       do \
@@ -131,7 +134,7 @@ md5_process_block (const void *buffer, size_t len, struct md5_ctx *ctx)
 	a += FX (b, c, d) + correct_words[k] + T;\
 	CYCLIC (a, s);\
 	a += b;\
-	}\
+    }\
       while (0)
 
 #define FX(b, c, d) FG (b, c, d)
@@ -336,57 +339,132 @@ void *md5_buffer (const char *buffer, size_t len, void *resblock)
 
 
 struct meminfo {
-  uint32_t hash[4];
+  uint32_t hash[5];
   unsigned long count;
+  domid_t id;
+  int flag;
 };
 
-static unsigned long dist_hash;
-static struct meminfo total_info[1000000UL];
+static unsigned long dist_hash = 0,match=0,zeropages=0,distmatch=0;
+static struct meminfo *ptr;
 
-void add_new_resblock(uint32_t *res)
+void add_new_resblock(uint32_t *res,
+		      struct domain *owner)
 {
   unsigned long i = 0;
+  struct meminfo *temp = ptr;
+
+  if (res == NULL) {
+    zeropages++;
+    return;
+  }
+  if (owner->domain_id > 15)
+    return;
+
   while (i < dist_hash) {
-    if (memcmp(res, total_info[i].hash, 4 * sizeof(uint32_t)) == 0) {
-      total_info[i].count++;
-      return;
+    if (memcmp(temp->hash,res,4 * sizeof(uint32_t)) == 0) {
+	temp->count++;
+	if (owner->domain_id != temp->id) {
+	    match++;
+	    if (temp->flag == 0) {
+	      printk("owner:%d,temp:%d\n",owner->domain_id,temp->id);
+	      distmatch++;
+	      temp->flag = 1;
+	    }
+	}
+	return;
     }
+    temp++;
     i++;
   }
-  memcpy(total_info[dist_hash].hash, res, 4 * sizeof(uint32_t));
+
+  memcpy(temp->hash, res, 4 * sizeof(uint32_t));
+  temp->count = 1;
+  temp->id = owner->domain_id;
+  temp->flag = 0;
   dist_hash++;
+}
+
+int is_zero_page(const char *buff)
+{
+  int i = 0;
+  while (i < PAGE_SIZE) {
+    if (buff[i] != 0)
+      return 0;
+    i++;
+  }
+  return 1;
+}
+
+void calculate_hash(const char *buff,
+		    struct domain *owner)
+{
+  /* SHA1Context sha; */
+  uint32_t resblock[4];
+
+  if (is_zero_page(buff)) {
+    add_new_resblock(NULL,owner);
+    return;
+  }
+
+  md5_buffer(buff,
+	     PAGE_SIZE,
+	     (void*)resblock);
+
+  add_new_resblock(resblock,owner);
+  /* SHA1Reset(&sha); */
+  /* SHA1Input(&sha, buff, PAGE_SIZE); */
+  /* if (!SHA1Result(&sha)) { */
+  /*   printk("Error in calculating hash\n"); */
+  /* } else { */
+  /*   add_new_resblock(sha.Message_Digest,owner); */
+  /* } */
 }
 
 long do_test_vm(void)
 {
+  unsigned long count = 0, total = 0;
   char *hypervisor_va;
-  unsigned long i,count = 0,total=0;
-  uint32_t resblock[4];
+  unsigned long xen = 0;
 
-  for (i = 0; i < total_pages; i++) {
-    if (mfn_valid(i)) {
-      if ( page_state_is(mfn_to_page(i), inuse) )
-	count++;
-      total++;
-      hypervisor_va = map_domain_page_global(i);
-      md5_buffer(hypervisor_va,
-		 PAGE_SIZE,
-		 (void*)resblock);
-      add_new_resblock(resblock);
-    /* printk("Test VM hypercall %d: %x %x %x %x\n",i, */
-    /* 	   hypervisor_va[0], */
-    /* 	   hypervisor_va[1], */
-    /* 	   hypervisor_va[2], */
-    /* 	   hypervisor_va[3]); */
-      unmap_domain_page_global(hypervisor_va);
+  printk("Total bytes to be allocated:%lu\n",PAGE_SIZE*5000);
+  ptr = xmalloc_bytes(PAGE_SIZE*5000);
+
+  dist_hash = 0;
+  match = 0;
+  zeropages = 0;
+  distmatch = 0;
+
+  if (!ptr) {
+    printk("Fur:Error in allocation\n");
+  } else {
+    unsigned long i = 0;
+    printk("Fur: Test hypercall\n");
+    for (i = 0; i < total_pages; i++) {
+      if (mfn_valid(i)) {
+	/* if ( page_state_is(mfn_to_page(i), inuse) ) { */
+	/* if (is_page_in_use(mfn_to_page(i))) { */
+	/*   count++; */
+	struct domain *owner;
+	owner = page_get_owner(mfn_to_page(i));
+
+	if (owner == NULL) {
+	  if (is_page_in_use(mfn_to_page(i)))
+	    xen++;
+	} else {
+	  count++;
+	  hypervisor_va = map_domain_page(i);
+	  calculate_hash((const char *)hypervisor_va,owner);
+	  unmap_domain_page(hypervisor_va);
+	}
+	total++;
+      }
     }
-    /* printk("Test VM hypercall %lu: %x %x %x %x\n",i, */
-    /* 	   resblock[0], */
-    /* 	   resblock[1], */
-    /* 	   resblock[2], */
-    /* 	   resblock[3]); */
+    printk("In use: %lu, total:%lu, my:%lu, match:%lu\n",count,total_pages,total,match);
+    printk("Free pages: %lu,dist hash:%lu,xen:%lu,zeropages:%lu\n",total_free_pages(),dist_hash,xen,zeropages);
+    printk("Dist match:%lu\n",distmatch);
+    xfree(ptr);
   }
-  printk("In use: %lu, total:%lu, my:%lu\n",count,total_pages,total);
-  printk("Free pages: %lu,dist hash:%lu\n",total_free_pages(),dist_hash);
+
   return(1);
 }
